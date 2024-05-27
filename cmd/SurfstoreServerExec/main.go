@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cse224/proj5/pkg/surfstore"
 	"flag"
 	"fmt"
 	"io"
@@ -74,14 +75,14 @@ func startServer(hostAddr string, serviceType string, blockStoreAddrs []string) 
 	grpcServer := grpc.NewServer()
 
 	// Register rpc services
-	if serviceType != "block" {
-		panic("todo")
+	if serviceType == "meta" {
+		surfstore.RegisterMetaStoreServer(grpcServer, surfstore.NewMetaStore(blockStoreAddrs))
+	} else if serviceType == "block" {
+		surfstore.RegisterBlockStoreServer(grpcServer, surfstore.NewBlockStore())
+	} else {
+		surfstore.RegisterMetaStoreServer(grpcServer, surfstore.NewMetaStore(blockStoreAddrs))
+		surfstore.RegisterBlockStoreServer(grpcServer, surfstore.NewBlockStore())
 	}
-
-	if serviceType != "meta" {
-		panic("todo")
-	}
-
 	l, e := net.Listen("tcp", hostAddr)
 	if e != nil {
 		return e
