@@ -2,6 +2,7 @@ package surfstore
 
 import (
 	context "context"
+	"fmt"
 	"time"
 
 	grpc "google.golang.org/grpc"
@@ -93,41 +94,45 @@ func (surfClient *RPCClient) GetBlockHashes(blockStoreAddr string, blockHashes *
 }
 
 func (surfClient *RPCClient) GetFileInfoMap(serverFileInfoMap *map[string]*FileMetaData) error {
-	conn, err := grpc.Dial(surfClient.MetaStoreAddrs[0], grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
-	}
+	for _, server := range surfClient.MetaStoreAddrs {
+		conn, err := grpc.Dial(server, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
 
-	c := NewRaftSurfstoreClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	f, err := c.GetFileInfoMap(ctx, &emptypb.Empty{})
-	if err != nil {
-		conn.Close()
-		return err
-	}
-	*serverFileInfoMap = f.FileInfoMap
+		c := NewRaftSurfstoreClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		f, err := c.GetFileInfoMap(ctx, &emptypb.Empty{})
+		if err != nil {
+			// TODO
+		}
+		*serverFileInfoMap = f.FileInfoMap
 
-	return conn.Close()
+		return conn.Close()
+	}
+	return fmt.Errorf("could not find a leader")
 }
 
 func (surfClient *RPCClient) UpdateFile(fileMetaData *FileMetaData, latestVersion *int32) error {
-	conn, err := grpc.Dial(surfClient.MetaStoreAddrs[0], grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
-	}
+	for _, server := range surfClient.MetaStoreAddrs {
+		conn, err := grpc.Dial(server, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
 
-	c := NewRaftSurfstoreClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	l, err := c.UpdateFile(ctx, fileMetaData)
-	if err != nil {
-		conn.Close()
-		return err
-	}
-	*latestVersion = l.Version
+		c := NewRaftSurfstoreClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		l, err := c.UpdateFile(ctx, fileMetaData)
+		if err != nil {
+			// TODO
+		}
+		*latestVersion = l.Version
 
-	return conn.Close()
+		return conn.Close()
+	}
+	return fmt.Errorf("could not find a leader")
 }
 
 func (surfClient *RPCClient) GetBlockStoreMap(blockHashesIn []string, blockStoreMap *map[string][]string) error {

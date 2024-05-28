@@ -74,3 +74,48 @@ func TestRaftSetLeader(t *testing.T) {
 		}
 	}
 }
+
+func TestRaftFollowersGetUpdates(t *testing.T) {
+	//Setup
+	cfgPath := "./config_files/3nodes.txt"
+	test := InitTest(cfgPath)
+	defer EndTest(test)
+
+	// TEST
+	leaderIdx := 0
+	test.Clients[leaderIdx].SetLeader(test.Context, &emptypb.Empty{})
+	test.Clients[leaderIdx].SendHeartbeat(test.Context, &emptypb.Empty{})
+
+	filemeta1 := &surfstore.FileMetaData{
+		Filename:      "testFile1",
+		Version:       1,
+		BlockHashList: nil,
+	}
+
+	test.Clients[leaderIdx].UpdateFile(test.Context, filemeta1)
+	test.Clients[leaderIdx].SendHeartbeat(test.Context, &emptypb.Empty{})
+
+	goldenMeta := make(map[string]*surfstore.FileMetaData)
+	goldenMeta[filemeta1.Filename] = filemeta1
+
+	goldenLog := make([]*surfstore.UpdateOperation, 0)
+	goldenLog = append(goldenLog, &surfstore.UpdateOperation{
+		Term:         1,
+		FileMetaData: filemeta1,
+	})
+
+	var leader bool
+	term := int64(1)
+
+	for idx, server := range test.Clients {
+		if idx == leaderIdx {
+			leader = bool(true)
+		} else {
+			leader = bool(false)
+		}
+		_, err := CheckInternalState(&leader, &term, goldenLog, goldenMeta, server, test.Context)
+		if err != nil {
+			t.Fatalf("Error checking state for server %d: %s", idx, err.Error())
+		}
+	}
+}
