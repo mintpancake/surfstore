@@ -28,6 +28,8 @@ type RaftSurfstore struct {
 	peers           []string
 	pendingRequests []*chan PendingRequest
 	lastApplied     int64
+	n               int
+	m               int
 
 	/*--------------- Chaos Monkey --------------*/
 	unreachableFrom map[int64]bool
@@ -36,6 +38,9 @@ type RaftSurfstore struct {
 
 func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty) (*FileInfoMap, error) {
 	// Ensure that the majority of servers are up
+	if err := s.checkStatus(); err != nil {
+		return nil, err
+	}
 	return s.metaStore.GetFileInfoMap(ctx, empty)
 }
 

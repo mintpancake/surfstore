@@ -70,6 +70,8 @@ func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
 		peers:           config.RaftAddrs,
 		pendingRequests: make([]*chan PendingRequest, 0),
 		lastApplied:     -1,
+		n:               len(config.RaftAddrs),
+		m:               len(config.RaftAddrs)/2 + 1,
 	}
 
 	return &server, nil
@@ -102,26 +104,24 @@ func (s *RaftSurfstore) checkStatus() error {
 }
 
 func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context, reqId int64) {
-	numServers := len(s.peers)
-	peerResponses := make(chan bool, numServers-1)
+	peerResponses := make(chan bool, s.n-1)
 
-	for idx := range s.peers {
-		// TODO: Use next index
-		entriesToSend := s.log
-		idx := int64(idx)
-
-		if idx == s.id {
+	for peerId := range s.peers {
+		peerId := int64(peerId)
+		if peerId == s.id {
 			continue
 		}
 
+		entriesToSend := make([]*UpdateOperation, 0)
+
 		//TODO: Utilize next index
 
-		go s.sendToFollower(ctx, idx, entriesToSend, peerResponses)
+		go s.sendToFollower(ctx, peerId, entriesToSend, peerResponses)
 	}
 
 	totalResponses := 1
 	numAliveServers := 1
-	for totalResponses < numServers {
+	for totalResponses < s.n {
 		response := <-peerResponses
 		totalResponses += 1
 		if response {
@@ -129,7 +129,7 @@ func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context, reqId int6
 		}
 	}
 
-	if numAliveServers > numServers/2 {
+	if numAliveServers >= s.m {
 		s.raftStateMutex.RLock()
 		requestLen := int64(len(s.pendingRequests))
 		s.raftStateMutex.RUnlock()
