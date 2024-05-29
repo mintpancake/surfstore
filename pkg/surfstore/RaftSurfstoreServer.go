@@ -29,10 +29,12 @@ type RaftSurfstore struct {
 	n int
 	m int
 
-	lastApplied int64
+	lastApplied      int64
+	nextIndex        []int64
+	matchIndex       []int64
+	pendingResponses map[int64]*Response
 
-	peers           []string
-	pendingRequests []*chan PendingRequest
+	peers []string
 
 	/*--------------- Chaos Monkey --------------*/
 	unreachableFrom map[int64]bool
@@ -41,20 +43,68 @@ type RaftSurfstore struct {
 
 func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty) (*FileInfoMap, error) {
 	// Ensure that the majority of servers are up
-	// if err := s.checkStatus(); err != nil {
-	// 	return nil, err
-	// }
+
+	// Check status
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+	if err := s.checkStatus(myStatus, false, -1); err != nil {
+		return nil, err
+	}
+
+	// Wait for majority
+	success := s.sendPersistentHeartbeats(ctx)
+
+	if !success {
+		// Reverted to follower
+		return nil, ErrNotLeader
+	}
+
 	return s.metaStore.GetFileInfoMap(ctx, empty)
 }
 
 func (s *RaftSurfstore) GetBlockStoreMap(ctx context.Context, hashes *BlockHashes) (*BlockStoreMap, error) {
 	// Ensure that the majority of servers are up
+
+	// Check status
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+	if err := s.checkStatus(myStatus, false, -1); err != nil {
+		return nil, err
+	}
+
+	// Wait for majority
+	success := s.sendPersistentHeartbeats(ctx)
+
+	if !success {
+		// Reverted to follower
+		return nil, ErrNotLeader
+	}
+
 	return s.metaStore.GetBlockStoreMap(ctx, hashes)
 
 }
 
 func (s *RaftSurfstore) GetBlockStoreAddrs(ctx context.Context, empty *emptypb.Empty) (*BlockStoreAddrs, error) {
 	// Ensure that the majority of servers are up
+
+	// Check status
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+	if err := s.checkStatus(myStatus, false, -1); err != nil {
+		return nil, err
+	}
+
+	// Wait for majority
+	success := s.sendPersistentHeartbeats(ctx)
+
+	if !success {
+		// Reverted to follower
+		return nil, ErrNotLeader
+	}
+
 	return s.metaStore.GetBlockStoreAddrs(ctx, empty)
 
 }
@@ -63,38 +113,53 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	// Ensure that the request gets replicated on majority of the servers.
 	// Commit the entries and then apply to the state machine
 
-	// if err := s.checkStatus(); err != nil {
-	// 	return nil, err
-	// }
+	// Check status
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+	if err := s.checkStatus(myStatus, false, -1); err != nil {
+		return nil, err
+	}
 
-	pendingReq := make(chan PendingRequest)
+	// Append to log
 	s.raftStateMutex.Lock()
 	entry := UpdateOperation{
 		Term:         s.term,
 		FileMetaData: filemeta,
 	}
 	s.log = append(s.log, &entry)
-
-	s.pendingRequests = append(s.pendingRequests, &pendingReq)
-
-	//TODO: Think whether it should be last or first request
-	reqId := len(s.pendingRequests) - 1
+	requestLogIndex := int64(len(s.log) - 1)
 	s.raftStateMutex.Unlock()
 
-	go s.sendPersistentHeartbeats(ctx, int64(reqId))
+	// Wait for majority
+	success := s.sendPersistentHeartbeats(ctx)
 
-	response := <-pendingReq
-	if response.err != nil {
-		return nil, response.err
+	if !success {
+		// Reverted to follower
+		return nil, ErrNotLeader
 	}
 
-	//TODO:
-	// Ensure that leader commits first and then applies to the state machine
 	s.raftStateMutex.Lock()
-	s.commitIndex += 1
+	// Update commit index
+	s.commitIndex = max(s.commitIndex, requestLogIndex)
+	// Apply to state machine
+	for s.lastApplied < s.commitIndex {
+		nextToApply := s.lastApplied + 1
+		nextEntry := s.log[nextToApply]
+		version, err := s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
+		// Cache response
+		s.pendingResponses[nextToApply] = &Response{
+			version: version,
+			Err:     err,
+		}
+		s.lastApplied = nextToApply
+	}
+	// Get response
+	response := s.pendingResponses[requestLogIndex]
+	delete(s.pendingResponses, requestLogIndex)
 	s.raftStateMutex.Unlock()
 
-	return s.metaStore.UpdateFile(ctx, entry.FileMetaData)
+	return response.version, response.Err
 }
 
 // 1. Reply false if term < currentTerm (§5.1)
@@ -147,7 +212,9 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Replicate log
-	s.log = append(s.log[:input.PrevLogIndex+1], input.Entries...)
+	nextLogIndex := input.PrevLogIndex + 1
+	s.mergeLog(nextLogIndex, input.Entries)
+	matchedIndex := input.PrevLogIndex + int64(len(input.Entries))
 
 	// Update commit index
 	if input.LeaderCommit > s.commitIndex {
@@ -158,52 +225,52 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	for s.lastApplied < s.commitIndex {
 		nextToApply := s.lastApplied + 1
 		nextEntry := s.log[nextToApply]
-		_, err := s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
-		if err != nil {
-			s.raftStateMutex.Unlock()
-			return nil, err
-		}
+		s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
 		s.lastApplied = nextToApply
 	}
 
 	s.raftStateMutex.Unlock()
 
-	return s.makeAppendEntryOutput(myTerm, myId, true, int64(len(s.log)-1)), nil
+	return s.makeAppendEntryOutput(myTerm, myId, true, matchedIndex), nil
 }
 
 func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
+	// Check status
 	s.serverStatusMutex.RLock()
-	serverStatus := s.serverStatus
+	myStatus := s.serverStatus
 	s.serverStatusMutex.RUnlock()
-
-	if serverStatus == ServerStatus_CRASHED {
-		return &Success{Flag: false}, ErrServerCrashed
+	if myStatus == ServerStatus_CRASHED {
+		return nil, ErrServerCrashed
 	}
 
 	s.serverStatusMutex.Lock()
 	s.serverStatus = ServerStatus_LEADER
-	log.Printf("Server %d has been set as a leader", s.id)
 	s.serverStatusMutex.Unlock()
 
 	s.raftStateMutex.Lock()
-	s.term += 1
+	s.term++
+	s.initLeaderStates()
 	s.raftStateMutex.Unlock()
-
-	//TODO: update the state
 
 	return &Success{Flag: true}, nil
 }
 
 func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
-	// if err := s.checkStatus(); err != nil {
-	// 	return nil, err
-	// }
+	// Check status
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+	if err := s.checkStatus(myStatus, false, -1); err != nil {
+		return nil, err
+	}
 
-	s.raftStateMutex.RLock()
-	reqId := len(s.pendingRequests) - 1
-	s.raftStateMutex.RUnlock()
+	// Wait for majority
+	success := s.sendPersistentHeartbeats(ctx)
 
-	s.sendPersistentHeartbeats(ctx, int64(reqId))
+	if !success {
+		// Reverted to follower
+		return &Success{Flag: false}, ErrNotLeader
+	}
 
 	return &Success{Flag: true}, nil
 }

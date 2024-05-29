@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"time"
 
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -70,10 +71,12 @@ func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
 		n: len(config.RaftAddrs),
 		m: len(config.RaftAddrs)/2 + 1,
 
-		lastApplied: -1,
+		lastApplied:      -1,
+		nextIndex:        make([]int64, len(config.RaftAddrs)),
+		matchIndex:       make([]int64, len(config.RaftAddrs)),
+		pendingResponses: make(map[int64]*Response),
 
-		peers:           config.RaftAddrs,
-		pendingRequests: make([]*chan PendingRequest, 0),
+		peers: config.RaftAddrs,
 
 		unreachableFrom: make(map[int64]bool),
 	}
@@ -124,7 +127,7 @@ func (s *RaftSurfstore) makeAppendEntryOutput(term int64, serverId int64, succes
 	}
 }
 
-// locked
+// Locked
 func (s *RaftSurfstore) isPrevLogMatched(prevLogIndex int64, prevLogTerm int64) bool {
 	myPrevLogIndex := int64(len(s.log) - 1)
 	if myPrevLogIndex < prevLogIndex {
@@ -137,68 +140,138 @@ func (s *RaftSurfstore) isPrevLogMatched(prevLogIndex int64, prevLogTerm int64) 
 	return myPrevLogTerm == prevLogTerm
 }
 
-func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context, reqId int64) {
-	peerResponses := make(chan bool, s.n-1)
+// Locked
+func (s *RaftSurfstore) mergeLog(nextLogIndex int64, newEntries []*UpdateOperation) {
+	myLogLength := int64(len(s.log))
+	newEntiresLength := int64(len(newEntries))
+
+	// If new entries are longer
+	if nextLogIndex+newEntiresLength >= myLogLength {
+		s.log = append(s.log[:nextLogIndex], newEntries...)
+		return
+	}
+
+	// Check if existing entries are equal
+	myEntires := s.log[nextLogIndex : nextLogIndex+newEntiresLength]
+	entriesAreEqual := true
+	for i := range myEntires {
+		if myEntires[i].Term != newEntries[i].Term {
+			entriesAreEqual = false
+			break
+		}
+	}
+
+	// If already contains the same entries
+	if entriesAreEqual {
+		return
+	}
+
+	// If not equal
+	s.log = append(s.log[:nextLogIndex], newEntries...)
+}
+
+// Locked
+func (s *RaftSurfstore) initLeaderStates() {
+	s.nextIndex = make([]int64, s.n)
+	for i := range s.nextIndex {
+		s.nextIndex[i] = int64(len(s.log))
+	}
+	s.matchIndex = make([]int64, s.n)
+	for i := range s.matchIndex {
+		s.matchIndex[i] = -1
+	}
+	s.pendingResponses = make(map[int64]*Response)
+}
+
+func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
+	peerResults := make(chan bool, s.n-1)
 
 	for peerId := range s.peers {
 		peerId := int64(peerId)
 		if peerId == s.id {
 			continue
 		}
-
-		entriesToSend := make([]*UpdateOperation, 0)
-
-		//TODO: Utilize next index
-
-		go s.sendToFollower(ctx, peerId, entriesToSend, peerResponses)
+		go s.mustSendToFollower(ctx, peerId, peerResults)
 	}
 
-	totalResponses := 1
+	// Wait for majority
+	numResults := 1
 	numAliveServers := 1
-	for totalResponses < s.n {
-		response := <-peerResponses
-		totalResponses += 1
-		if response {
-			numAliveServers += 1
+	for numResults < s.n {
+		peerOk := <-peerResults
+		numResults++
+		if peerOk {
+			numAliveServers++
+		}
+		if numAliveServers >= s.m {
+			break
 		}
 	}
 
 	if numAliveServers >= s.m {
-		s.raftStateMutex.RLock()
-		requestLen := int64(len(s.pendingRequests))
-		s.raftStateMutex.RUnlock()
+		// If majority, success
+		return true
+	} else {
+		// If not majority, reverted to follower
+		return false
+	}
+}
 
-		if reqId >= 0 && reqId < requestLen {
+func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, peerResult chan<- bool) {
+	client := NewRaftSurfstoreClient(s.rpcConns[peerId])
+
+	// Get the latest append entry input
+	s.raftStateMutex.RLock()
+	appendEntryInput := s.makeAppendEntryInput(peerId)
+	s.raftStateMutex.RUnlock()
+
+	// Make PRC
+	output, err := client.AppendEntries(ctx, appendEntryInput)
+
+	for {
+		if err != nil {
+			// If error, retry
+			time.Sleep(100 * time.Millisecond)
+			output, err = client.AppendEntries(ctx, appendEntryInput)
+		} else if output.Success {
+			// If successful, update next index and match index
 			s.raftStateMutex.Lock()
-			*s.pendingRequests[reqId] <- PendingRequest{success: true, err: nil}
-			s.pendingRequests = append(s.pendingRequests[:reqId], s.pendingRequests[reqId+1:]...)
+			s.nextIndex[peerId] = output.MatchedIndex + 1
+			s.matchIndex[peerId] = output.MatchedIndex
 			s.raftStateMutex.Unlock()
+			peerResult <- true
+			break
+		} else if output.Term > s.term {
+			// If I am a stale leader, revert to follower
+			s.serverStatusMutex.Lock()
+			s.serverStatus = ServerStatus_FOLLOWER
+			s.serverStatusMutex.Unlock()
+			s.raftStateMutex.Lock()
+			s.term = output.Term
+			s.raftStateMutex.Unlock()
+			peerResult <- false
+			break
+		} else {
+			// If log inconsistency, decrement next index and retry
+			s.raftStateMutex.Lock()
+			s.nextIndex[peerId] -= 1
+			appendEntryInput = s.makeAppendEntryInput(peerId)
+			s.raftStateMutex.Unlock()
+			output, err = client.AppendEntries(ctx, appendEntryInput)
 		}
 	}
 }
 
-func (s *RaftSurfstore) sendToFollower(ctx context.Context, peerId int64, entries []*UpdateOperation, peerResponses chan<- bool) {
-	client := NewRaftSurfstoreClient(s.rpcConns[peerId])
-
-	s.raftStateMutex.RLock()
-	appendEntriesInput := AppendEntryInput{
+// Locked
+func (s *RaftSurfstore) makeAppendEntryInput(peerId int64) *AppendEntryInput {
+	peerNextIndex := s.nextIndex[peerId]
+	appendEntryInput := &AppendEntryInput{
 		Term:         s.term,
 		LeaderId:     s.id,
-		PrevLogTerm:  0,
-		PrevLogIndex: -1,
-		Entries:      entries,
+		PrevLogTerm:  s.log[peerNextIndex-1].Term,
+		PrevLogIndex: peerNextIndex - 1,
+		Entries:      s.log[peerNextIndex:],
 		LeaderCommit: s.commitIndex,
 	}
-	s.raftStateMutex.RUnlock()
-
-	reply, err := client.AppendEntries(ctx, &appendEntriesInput)
-	log.Println("Server", s.id, ": Receiving output:", "Term", reply.Term, "Id", reply.ServerId, "Success", reply.Success, "Matched Index", reply.MatchedIndex)
-
-	// TODO: Handle reply
-
-	if err != nil {
-		peerResponses <- false
-	} else {
-		peerResponses <- true
-	}
+	return appendEntryInput
 }

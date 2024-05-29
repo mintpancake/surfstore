@@ -105,7 +105,7 @@ func (surfClient *RPCClient) GetFileInfoMap(serverFileInfoMap *map[string]*FileM
 		defer cancel()
 		f, err := c.GetFileInfoMap(ctx, &emptypb.Empty{})
 		if err != nil {
-			// TODO
+			continue
 		}
 		*serverFileInfoMap = f.FileInfoMap
 
@@ -126,7 +126,7 @@ func (surfClient *RPCClient) UpdateFile(fileMetaData *FileMetaData, latestVersio
 		defer cancel()
 		l, err := c.UpdateFile(ctx, fileMetaData)
 		if err != nil {
-			// TODO
+			continue
 		}
 		*latestVersion = l.Version
 
@@ -136,43 +136,47 @@ func (surfClient *RPCClient) UpdateFile(fileMetaData *FileMetaData, latestVersio
 }
 
 func (surfClient *RPCClient) GetBlockStoreMap(blockHashesIn []string, blockStoreMap *map[string][]string) error {
-	conn, err := grpc.Dial(surfClient.MetaStoreAddrs[0], grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
-	}
+	for _, server := range surfClient.MetaStoreAddrs {
+		conn, err := grpc.Dial(server, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
 
-	c := NewRaftSurfstoreClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	b, err := c.GetBlockStoreMap(ctx, &BlockHashes{Hashes: blockHashesIn})
-	if err != nil {
-		conn.Close()
-		return err
-	}
-	for k, v := range b.BlockStoreMap {
-		(*blockStoreMap)[k] = v.Hashes
-	}
+		c := NewRaftSurfstoreClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		b, err := c.GetBlockStoreMap(ctx, &BlockHashes{Hashes: blockHashesIn})
+		if err != nil {
+			continue
+		}
+		for k, v := range b.BlockStoreMap {
+			(*blockStoreMap)[k] = v.Hashes
+		}
 
-	return conn.Close()
+		return conn.Close()
+	}
+	return fmt.Errorf("could not find a leader")
 }
 
 func (surfClient *RPCClient) GetBlockStoreAddrs(blockStoreAddrs *[]string) error {
-	conn, err := grpc.Dial(surfClient.MetaStoreAddrs[0], grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return err
-	}
+	for _, server := range surfClient.MetaStoreAddrs {
+		conn, err := grpc.Dial(server, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			return err
+		}
 
-	c := NewRaftSurfstoreClient(conn)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	b, err := c.GetBlockStoreAddrs(ctx, &emptypb.Empty{})
-	if err != nil {
-		conn.Close()
-		return err
-	}
-	*blockStoreAddrs = b.BlockStoreAddrs
+		c := NewRaftSurfstoreClient(conn)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		b, err := c.GetBlockStoreAddrs(ctx, &emptypb.Empty{})
+		if err != nil {
+			continue
+		}
+		*blockStoreAddrs = b.BlockStoreAddrs
 
-	return conn.Close()
+		return conn.Close()
+	}
+	return fmt.Errorf("could not find a leader")
 }
 
 // This line guarantees all method for RPCClient are implemented
