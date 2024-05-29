@@ -13,23 +13,26 @@ import (
 type RaftSurfstore struct {
 	serverStatus      ServerStatus
 	serverStatusMutex *sync.RWMutex
-	term              int64
-	log               []*UpdateOperation
-	id                int64
-	metaStore         *MetaStore
-	commitIndex       int64
 
+	id   int64
+	term int64
+
+	log            []*UpdateOperation
+	metaStore      *MetaStore
+	commitIndex    int64
 	raftStateMutex *sync.RWMutex
 
 	rpcConns   []*grpc.ClientConn
 	grpcServer *grpc.Server
 
 	/*--------------- Added --------------*/
+	n int
+	m int
+
+	lastApplied int64
+
 	peers           []string
 	pendingRequests []*chan PendingRequest
-	lastApplied     int64
-	n               int
-	m               int
 
 	/*--------------- Chaos Monkey --------------*/
 	unreachableFrom map[int64]bool
@@ -38,9 +41,9 @@ type RaftSurfstore struct {
 
 func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty) (*FileInfoMap, error) {
 	// Ensure that the majority of servers are up
-	if err := s.checkStatus(); err != nil {
-		return nil, err
-	}
+	// if err := s.checkStatus(); err != nil {
+	// 	return nil, err
+	// }
 	return s.metaStore.GetFileInfoMap(ctx, empty)
 }
 
@@ -60,9 +63,9 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	// Ensure that the request gets replicated on majority of the servers.
 	// Commit the entries and then apply to the state machine
 
-	if err := s.checkStatus(); err != nil {
-		return nil, err
-	}
+	// if err := s.checkStatus(); err != nil {
+	// 	return nil, err
+	// }
 
 	pendingReq := make(chan PendingRequest)
 	s.raftStateMutex.Lock()
@@ -103,51 +106,69 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 // 5. If leaderCommit > commitIndex, set commitIndex = min(leaderCommit, index
 // of last new entry)
 func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInput) (*AppendEntryOutput, error) {
-	//check the status
+	// Check status
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+	if err := s.checkStatus(myStatus, true, input.LeaderId); err != nil {
+		return nil, err
+	}
+
 	s.raftStateMutex.RLock()
-	peerTerm := s.term
-	peerId := s.id
+	myTerm := s.term
+	myId := s.id
 	s.raftStateMutex.RUnlock()
 
-	success := true
-	if peerTerm < input.Term {
-		s.serverStatusMutex.Lock()
-		s.serverStatus = ServerStatus_FOLLOWER
-		s.serverStatusMutex.Unlock()
+	// Reject if peer is stale
+	if input.Term < myTerm {
+		return s.makeAppendEntryOutput(myTerm, myId, false, -1), nil
+	}
+
+	// Revert to follower if I am stale
+	if myTerm < input.Term {
+		if myStatus != ServerStatus_FOLLOWER {
+			s.serverStatusMutex.Lock()
+			s.serverStatus = ServerStatus_FOLLOWER
+			s.serverStatusMutex.Unlock()
+		}
 
 		s.raftStateMutex.Lock()
 		s.term = input.Term
 		s.raftStateMutex.Unlock()
-
-		peerTerm = input.Term
+		myTerm = input.Term
 	}
 
-	//TODO: Change per algorithm
-	dummyAppendEntriesOutput := AppendEntryOutput{
-		Term:         peerTerm,
-		ServerId:     peerId,
-		Success:      success,
-		MatchedIndex: -1,
-	}
-
-	//TODO: Change this per algorithm
 	s.raftStateMutex.Lock()
-	s.log = input.Entries
 
-	s.commitIndex = input.LeaderCommit
+	// Reply false if no matched index
+	if !s.isPrevLogMatched(input.PrevLogIndex, input.PrevLogTerm) {
+		s.raftStateMutex.Unlock()
+		return s.makeAppendEntryOutput(myTerm, myId, false, -1), nil
+	}
+
+	// Replicate log
+	s.log = append(s.log[:input.PrevLogIndex+1], input.Entries...)
+
+	// Update commit index
+	if input.LeaderCommit > s.commitIndex {
+		s.commitIndex = min(input.LeaderCommit, int64(len(s.log)-1))
+	}
+
+	// Apply to state machine
 	for s.lastApplied < s.commitIndex {
-		entry := s.log[s.lastApplied+1]
-		_, err := s.metaStore.UpdateFile(ctx, entry.FileMetaData)
+		nextToApply := s.lastApplied + 1
+		nextEntry := s.log[nextToApply]
+		_, err := s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
 		if err != nil {
 			s.raftStateMutex.Unlock()
 			return nil, err
 		}
-		s.lastApplied += 1
+		s.lastApplied = nextToApply
 	}
-	log.Println("Server", s.id, ": Sending output:", "Term", dummyAppendEntriesOutput.Term, "Id", dummyAppendEntriesOutput.ServerId, "Success", dummyAppendEntriesOutput.Success, "Matched Index", dummyAppendEntriesOutput.MatchedIndex)
+
 	s.raftStateMutex.Unlock()
 
-	return &dummyAppendEntriesOutput, nil
+	return s.makeAppendEntryOutput(myTerm, myId, true, int64(len(s.log)-1)), nil
 }
 
 func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
@@ -174,9 +195,9 @@ func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Succe
 }
 
 func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
-	if err := s.checkStatus(); err != nil {
-		return nil, err
-	}
+	// if err := s.checkStatus(); err != nil {
+	// 	return nil, err
+	// }
 
 	s.raftStateMutex.RLock()
 	reqId := len(s.pendingRequests) - 1

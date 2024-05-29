@@ -54,24 +54,28 @@ func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
 	server := RaftSurfstore{
 		serverStatus:      ServerStatus_FOLLOWER,
 		serverStatusMutex: &serverStatusMutex,
-		term:              0,
-		metaStore:         NewMetaStore(config.BlockAddrs),
-		log:               make([]*UpdateOperation, 0),
 
-		id:          id,
-		commitIndex: -1,
+		id:   id,
+		term: 0,
 
-		unreachableFrom: make(map[int64]bool),
-		grpcServer:      grpc.NewServer(),
-		rpcConns:        conns,
-
+		log:            make([]*UpdateOperation, 0),
+		metaStore:      NewMetaStore(config.BlockAddrs),
+		commitIndex:    -1,
 		raftStateMutex: &raftStateMutex,
+
+		rpcConns:   conns,
+		grpcServer: grpc.NewServer(),
+
+		/*--------------- Added --------------*/
+		n: len(config.RaftAddrs),
+		m: len(config.RaftAddrs)/2 + 1,
+
+		lastApplied: -1,
 
 		peers:           config.RaftAddrs,
 		pendingRequests: make([]*chan PendingRequest, 0),
-		lastApplied:     -1,
-		n:               len(config.RaftAddrs),
-		m:               len(config.RaftAddrs)/2 + 1,
+
+		unreachableFrom: make(map[int64]bool),
 	}
 
 	return &server, nil
@@ -87,20 +91,50 @@ func ServeRaftServer(server *RaftSurfstore) error {
 	return server.grpcServer.Serve(l)
 }
 
-func (s *RaftSurfstore) checkStatus() error {
-	s.serverStatusMutex.RLock()
-	serverStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-
-	if serverStatus == ServerStatus_CRASHED {
+func (s *RaftSurfstore) checkStatus(myStatus ServerStatus, isFromLeader bool, leaderId int64) error {
+	// If crashed
+	if myStatus == ServerStatus_CRASHED {
 		return ErrServerCrashed
 	}
 
-	if serverStatus != ServerStatus_LEADER {
-		return ErrNotLeader
+	if isFromLeader {
+		// If from leader, check unreachablity
+		s.raftStateMutex.RLock()
+		isUnreachableFromLeader := s.unreachableFrom[leaderId]
+		s.raftStateMutex.RUnlock()
+		if isUnreachableFromLeader {
+			return ErrServerCrashedUnreachable
+		}
+	} else {
+		// If from client, check leadership
+		if myStatus != ServerStatus_LEADER {
+			return ErrNotLeader
+		}
 	}
 
 	return nil
+}
+
+func (s *RaftSurfstore) makeAppendEntryOutput(term int64, serverId int64, success bool, matchedIndex int64) *AppendEntryOutput {
+	return &AppendEntryOutput{
+		Term:         term,
+		ServerId:     serverId,
+		Success:      success,
+		MatchedIndex: matchedIndex,
+	}
+}
+
+// locked
+func (s *RaftSurfstore) isPrevLogMatched(prevLogIndex int64, prevLogTerm int64) bool {
+	myPrevLogIndex := int64(len(s.log) - 1)
+	if myPrevLogIndex < prevLogIndex {
+		return false
+	}
+	if prevLogIndex < 0 {
+		return true
+	}
+	myPrevLogTerm := s.log[prevLogIndex].Term
+	return myPrevLogTerm == prevLogTerm
 }
 
 func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context, reqId int64) {
