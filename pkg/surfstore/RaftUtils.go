@@ -39,7 +39,6 @@ func LoadRaftConfigFile(filename string) (cfg RaftConfig) {
 }
 
 func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
-	// TODO Any initialization you need here
 	conns := make([]*grpc.ClientConn, 0)
 	for _, addr := range config.RaftAddrs {
 		conn, err := grpc.Dial(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -84,7 +83,6 @@ func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
 	return &server, nil
 }
 
-// TODO Start up the Raft server and any services here
 func ServeRaftServer(server *RaftSurfstore) error {
 	RegisterRaftSurfstoreServer(server.grpcServer, server)
 	l, e := net.Listen("tcp", server.peers[server.id])
