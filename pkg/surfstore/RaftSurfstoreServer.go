@@ -9,7 +9,6 @@ import (
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
 )
 
-// TODO Add fields you need here
 type RaftSurfstore struct {
 	serverStatus      ServerStatus
 	serverStatusMutex *sync.RWMutex
