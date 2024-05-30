@@ -111,11 +111,11 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 
 	// Append to log
 	s.raftStateMutex.Lock()
-	entry := UpdateOperation{
+	entry := &UpdateOperation{
 		Term:         s.term,
 		FileMetaData: filemeta,
 	}
-	s.log = append(s.log, &entry)
+	s.log = append(s.log, entry)
 	requestLogIndex := int64(len(s.log) - 1)
 	s.raftStateMutex.Unlock()
 

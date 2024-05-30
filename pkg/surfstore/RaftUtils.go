@@ -213,7 +213,7 @@ func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
 	}
 
 	if numAliveServers >= s.m {
-		// If majority, success
+		// If majority, can commit no matter whether reverted to follower
 		return true
 	} else {
 		// If not majority, reverted to follower
