@@ -94,28 +94,32 @@ func ServeRaftServer(server *RaftSurfstore) error {
 	return server.grpcServer.Serve(l)
 }
 
-func (s *RaftSurfstore) checkStatus(myStatus ServerStatus, isFromLeader bool, leaderId int64) error {
+func (s *RaftSurfstore) checkStatus(isFromLeader bool, leaderId int64) (ServerStatus, error) {
+	s.serverStatusMutex.RLock()
+	myStatus := s.serverStatus
+	s.serverStatusMutex.RUnlock()
+
 	// If crashed
 	if myStatus == ServerStatus_CRASHED {
-		return ErrServerCrashed
+		return myStatus, ErrServerCrashed
 	}
 
 	if isFromLeader {
 		// If from leader, check unreachablity
 		s.raftStateMutex.RLock()
-		isUnreachableFromLeader := s.unreachableFrom[leaderId]
+		isUnreachable := s.unreachableFrom[leaderId]
 		s.raftStateMutex.RUnlock()
-		if isUnreachableFromLeader {
-			return ErrServerCrashedUnreachable
+		if isUnreachable {
+			return myStatus, ErrServerCrashedUnreachable
 		}
 	} else {
 		// If from client, check leadership
 		if myStatus != ServerStatus_LEADER {
-			return ErrNotLeader
+			return myStatus, ErrNotLeader
 		}
 	}
 
-	return nil
+	return myStatus, nil
 }
 
 func (s *RaftSurfstore) makeAppendEntryOutput(term int64, serverId int64, success bool, matchedIndex int64) *AppendEntryOutput {
@@ -153,16 +157,16 @@ func (s *RaftSurfstore) mergeLog(nextLogIndex int64, newEntries []*UpdateOperati
 
 	// Check if existing entries are equal
 	myEntires := s.log[nextLogIndex : nextLogIndex+newEntiresLength]
-	entriesAreEqual := true
+	entriesEqual := true
 	for i := range myEntires {
 		if myEntires[i].Term != newEntries[i].Term {
-			entriesAreEqual = false
+			entriesEqual = false
 			break
 		}
 	}
 
 	// If already contains the same entries
-	if entriesAreEqual {
+	if entriesEqual {
 		return
 	}
 
@@ -265,10 +269,14 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 // Locked
 func (s *RaftSurfstore) makeAppendEntryInput(peerId int64) *AppendEntryInput {
 	peerNextIndex := s.nextIndex[peerId]
+	prevLogTerm := int64(0)
+	if peerNextIndex > 0 {
+		prevLogTerm = s.log[peerNextIndex-1].Term
+	}
 	appendEntryInput := &AppendEntryInput{
 		Term:         s.term,
 		LeaderId:     s.id,
-		PrevLogTerm:  s.log[peerNextIndex-1].Term,
+		PrevLogTerm:  prevLogTerm,
 		PrevLogIndex: peerNextIndex - 1,
 		Entries:      s.log[peerNextIndex:],
 		LeaderCommit: s.commitIndex,

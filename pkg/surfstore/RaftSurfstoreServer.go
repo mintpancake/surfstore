@@ -45,10 +45,7 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 	// Ensure that the majority of servers are up
 
 	// Check status
-	s.serverStatusMutex.RLock()
-	myStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-	if err := s.checkStatus(myStatus, false, -1); err != nil {
+	if _, err := s.checkStatus(false, -1); err != nil {
 		return nil, err
 	}
 
@@ -67,10 +64,7 @@ func (s *RaftSurfstore) GetBlockStoreMap(ctx context.Context, hashes *BlockHashe
 	// Ensure that the majority of servers are up
 
 	// Check status
-	s.serverStatusMutex.RLock()
-	myStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-	if err := s.checkStatus(myStatus, false, -1); err != nil {
+	if _, err := s.checkStatus(false, -1); err != nil {
 		return nil, err
 	}
 
@@ -90,10 +84,7 @@ func (s *RaftSurfstore) GetBlockStoreAddrs(ctx context.Context, empty *emptypb.E
 	// Ensure that the majority of servers are up
 
 	// Check status
-	s.serverStatusMutex.RLock()
-	myStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-	if err := s.checkStatus(myStatus, false, -1); err != nil {
+	if _, err := s.checkStatus(false, -1); err != nil {
 		return nil, err
 	}
 
@@ -114,10 +105,7 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	// Commit the entries and then apply to the state machine
 
 	// Check status
-	s.serverStatusMutex.RLock()
-	myStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-	if err := s.checkStatus(myStatus, false, -1); err != nil {
+	if _, err := s.checkStatus(false, -1); err != nil {
 		return nil, err
 	}
 
@@ -172,10 +160,8 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 // of last new entry)
 func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInput) (*AppendEntryOutput, error) {
 	// Check status
-	s.serverStatusMutex.RLock()
-	myStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-	if err := s.checkStatus(myStatus, true, input.LeaderId); err != nil {
+	myStatus, err := s.checkStatus(true, input.LeaderId)
+	if err != nil {
 		return nil, err
 	}
 
@@ -240,7 +226,7 @@ func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Succe
 	myStatus := s.serverStatus
 	s.serverStatusMutex.RUnlock()
 	if myStatus == ServerStatus_CRASHED {
-		return nil, ErrServerCrashed
+		return &Success{Flag: false}, ErrServerCrashed
 	}
 
 	s.serverStatusMutex.Lock()
@@ -257,11 +243,8 @@ func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Succe
 
 func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*Success, error) {
 	// Check status
-	s.serverStatusMutex.RLock()
-	myStatus := s.serverStatus
-	s.serverStatusMutex.RUnlock()
-	if err := s.checkStatus(myStatus, false, -1); err != nil {
-		return nil, err
+	if _, err := s.checkStatus(false, -1); err != nil {
+		return &Success{Flag: false}, err
 	}
 
 	// Wait for majority
