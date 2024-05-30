@@ -226,6 +226,7 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 
 	// Get the latest append entry input
 	s.raftStateMutex.RLock()
+	myTerm := s.term
 	appendEntryInput := s.makeAppendEntryInput(peerId)
 	s.raftStateMutex.RUnlock()
 
@@ -245,7 +246,7 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 			s.raftStateMutex.Unlock()
 			peerResult <- true
 			break
-		} else if output.Term > s.term {
+		} else if output.Term > myTerm {
 			// If I am a stale leader, revert to follower
 			s.serverStatusMutex.Lock()
 			s.serverStatus = ServerStatus_FOLLOWER
