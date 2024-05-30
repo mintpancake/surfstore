@@ -175,7 +175,10 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Revert to follower if I am stale
+	isNewLeader := false
 	if myTerm < input.Term {
+		isNewLeader = true
+
 		if myStatus != ServerStatus_FOLLOWER {
 			s.serverStatusMutex.Lock()
 			s.serverStatus = ServerStatus_FOLLOWER
@@ -197,7 +200,7 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Replicate log
-	s.mergeLog(input.PrevLogIndex, input.Entries)
+	s.mergeLog(input.PrevLogIndex, input.Entries, isNewLeader)
 	matchedIndex := input.PrevLogIndex + int64(len(input.Entries))
 
 	// Update commit index

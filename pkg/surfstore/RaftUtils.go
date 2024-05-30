@@ -143,12 +143,20 @@ func (s *RaftSurfstore) isPrevLogMatched(prevLogIndex int64, prevLogTerm int64) 
 }
 
 // Locked
-func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperation) {
+func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperation, isNewLeader bool) {
 	nextLogIndex := prevLogIndex + 1
+
+	// If new leader, remove extraneous entries
+	if isNewLeader {
+		s.log = append(s.log[:nextLogIndex], newEntries...)
+		return
+	}
+
+	// If same leader, keep idempotent
 	myLogLength := int64(len(s.log))
 	newEntiresLength := int64(len(newEntries))
 
-	// If new entries are longer
+	// If new entries are longer, replace
 	if nextLogIndex+newEntiresLength >= myLogLength {
 		s.log = append(s.log[:nextLogIndex], newEntries...)
 		return
@@ -164,12 +172,12 @@ func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperati
 		}
 	}
 
-	// If already contains the same entries
+	// If equal, keep idempotent
 	if entriesEqual {
 		return
 	}
 
-	// If not equal
+	// If not equal, replace
 	s.log = append(s.log[:nextLogIndex], newEntries...)
 }
 
