@@ -143,7 +143,8 @@ func (s *RaftSurfstore) isPrevLogMatched(prevLogIndex int64, prevLogTerm int64) 
 }
 
 // Locked
-func (s *RaftSurfstore) mergeLog(nextLogIndex int64, newEntries []*UpdateOperation) {
+func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperation) {
+	nextLogIndex := prevLogIndex + 1
 	myLogLength := int64(len(s.log))
 	newEntiresLength := int64(len(newEntries))
 

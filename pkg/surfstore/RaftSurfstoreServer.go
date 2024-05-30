@@ -197,8 +197,7 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Replicate log
-	nextLogIndex := input.PrevLogIndex + 1
-	s.mergeLog(nextLogIndex, input.Entries)
+	s.mergeLog(input.PrevLogIndex, input.Entries)
 	matchedIndex := input.PrevLogIndex + int64(len(input.Entries))
 
 	// Update commit index
