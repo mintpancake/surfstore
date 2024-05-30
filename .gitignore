@@ -1,4 +1,6 @@
 playground/
+test/
 bin/
 _bin/
 *.exe
+*.db
