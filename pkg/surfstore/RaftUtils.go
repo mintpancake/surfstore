@@ -143,16 +143,8 @@ func (s *RaftSurfstore) isPrevLogMatched(prevLogIndex int64, prevLogTerm int64) 
 }
 
 // Locked
-func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperation, isNewLeader bool) {
+func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperation) {
 	nextLogIndex := prevLogIndex + 1
-
-	// If new leader, remove extraneous entries
-	if isNewLeader {
-		s.log = append(s.log[:nextLogIndex], newEntries...)
-		return
-	}
-
-	// If same leader, keep idempotent
 	myLogLength := int64(len(s.log))
 	newEntiresLength := int64(len(newEntries))
 
@@ -183,6 +175,10 @@ func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperati
 
 // Locked
 func (s *RaftSurfstore) initLeaderStates() {
+	// Append no-op entry
+	s.log = append(s.log, &UpdateOperation{Term: s.term, FileMetaData: nil})
+
+	// Init next index and match index
 	s.nextIndex = make([]int64, s.n)
 	for i := range s.nextIndex {
 		s.nextIndex[i] = int64(len(s.log))
@@ -191,12 +187,22 @@ func (s *RaftSurfstore) initLeaderStates() {
 	for i := range s.matchIndex {
 		s.matchIndex[i] = -1
 	}
+
+	// Init pending responses
 	s.pendingResponses = make(map[int64]*Response)
 }
 
 func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
-	peerResults := make(chan bool, s.n-1)
+	// Get index to commit
+	s.raftStateMutex.RLock()
+	toCommitIndex := s.commitIndex
+	if s.log[len(s.log)-1].Term == s.term {
+		// If the latest log entry is from this term, try committing it
+		toCommitIndex = int64(len(s.log) - 1)
+	}
+	s.raftStateMutex.RUnlock()
 
+	peerResults := make(chan bool, s.n-1)
 	for peerId := range s.peers {
 		peerId := int64(peerId)
 		if peerId == s.id {
@@ -219,13 +225,19 @@ func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
 		}
 	}
 
-	if numAliveServers >= s.m {
-		// If majority, can commit no matter whether reverted to follower
-		return true
-	} else {
+	if numAliveServers < s.m {
 		// If not majority, reverted to follower
 		return false
 	}
+
+	s.raftStateMutex.Lock()
+	// Update commit index
+	s.commitIndex = max(s.commitIndex, toCommitIndex)
+	// Apply to state machine
+	s.executeStateMachine(ctx, true)
+	s.raftStateMutex.Unlock()
+
+	return true
 }
 
 func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, peerResult chan<- bool) {
@@ -266,11 +278,32 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 		} else {
 			// If log inconsistency, decrement next index and retry
 			s.raftStateMutex.Lock()
-			s.nextIndex[peerId] -= 1
+			s.nextIndex[peerId] = max(s.nextIndex[peerId]-1, 0)
 			appendEntryInput = s.makeAppendEntryInput(peerId)
 			s.raftStateMutex.Unlock()
 			output, err = client.AppendEntries(ctx, appendEntryInput)
 		}
+	}
+}
+
+// Locked
+func (s *RaftSurfstore) executeStateMachine(ctx context.Context, isLeader bool) {
+	// Sync state machine to commit index
+	for s.lastApplied < s.commitIndex {
+		nextToApply := s.lastApplied + 1
+		nextEntry := s.log[nextToApply]
+		if nextEntry.FileMetaData != nil {
+			// If is not no-op, apply to state machine
+			version, err := s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
+			if isLeader {
+				// If is leader, cache response
+				s.pendingResponses[nextToApply] = &Response{
+					version: version,
+					Err:     err,
+				}
+			}
+		}
+		s.lastApplied = nextToApply
 	}
 }
 

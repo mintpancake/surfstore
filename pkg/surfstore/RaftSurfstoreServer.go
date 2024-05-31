@@ -50,7 +50,6 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 
 	// Wait for majority
 	success := s.sendPersistentHeartbeats(ctx)
-
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
@@ -69,7 +68,6 @@ func (s *RaftSurfstore) GetBlockStoreMap(ctx context.Context, hashes *BlockHashe
 
 	// Wait for majority
 	success := s.sendPersistentHeartbeats(ctx)
-
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
@@ -89,7 +87,6 @@ func (s *RaftSurfstore) GetBlockStoreAddrs(ctx context.Context, empty *emptypb.E
 
 	// Wait for majority
 	success := s.sendPersistentHeartbeats(ctx)
-
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
@@ -120,27 +117,12 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 
 	// Wait for majority
 	success := s.sendPersistentHeartbeats(ctx)
-
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
 	}
 
 	s.raftStateMutex.Lock()
-	// Update commit index
-	s.commitIndex = max(s.commitIndex, requestLogIndex)
-	// Apply to state machine
-	for s.lastApplied < s.commitIndex {
-		nextToApply := s.lastApplied + 1
-		nextEntry := s.log[nextToApply]
-		version, err := s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
-		// Cache response
-		s.pendingResponses[nextToApply] = &Response{
-			version: version,
-			Err:     err,
-		}
-		s.lastApplied = nextToApply
-	}
 	// Get response
 	response := s.pendingResponses[requestLogIndex]
 	delete(s.pendingResponses, requestLogIndex)
@@ -175,10 +157,7 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Revert to follower if I am stale
-	isNewLeader := false
 	if myTerm < input.Term {
-		isNewLeader = true
-
 		if myStatus != ServerStatus_FOLLOWER {
 			s.serverStatusMutex.Lock()
 			s.serverStatus = ServerStatus_FOLLOWER
@@ -200,7 +179,7 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Replicate log
-	s.mergeLog(input.PrevLogIndex, input.Entries, isNewLeader)
+	s.mergeLog(input.PrevLogIndex, input.Entries)
 	matchedIndex := input.PrevLogIndex + int64(len(input.Entries))
 
 	// Update commit index
@@ -209,12 +188,7 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Apply to state machine
-	for s.lastApplied < s.commitIndex {
-		nextToApply := s.lastApplied + 1
-		nextEntry := s.log[nextToApply]
-		s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
-		s.lastApplied = nextToApply
-	}
+	s.executeStateMachine(ctx, false)
 
 	s.raftStateMutex.Unlock()
 
@@ -250,7 +224,6 @@ func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*S
 
 	// Wait for majority
 	success := s.sendPersistentHeartbeats(ctx)
-
 	if !success {
 		// Reverted to follower
 		return &Success{Flag: false}, ErrNotLeader
