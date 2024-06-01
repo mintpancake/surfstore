@@ -175,9 +175,6 @@ func (s *RaftSurfstore) mergeLog(prevLogIndex int64, newEntries []*UpdateOperati
 
 // Locked
 func (s *RaftSurfstore) initLeaderStates() {
-	// Append no-op entry
-	s.log = append(s.log, &UpdateOperation{Term: s.term, FileMetaData: nil})
-
 	// Init next index and match index
 	s.nextIndex = make([]int64, s.n)
 	for i := range s.nextIndex {
@@ -192,7 +189,7 @@ func (s *RaftSurfstore) initLeaderStates() {
 	s.pendingResponses = make(map[int64]*Response)
 }
 
-func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
+func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 	// Get index to commit
 	s.raftStateMutex.RLock()
 	toCommitIndex := s.commitIndex
@@ -208,7 +205,7 @@ func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
 		if peerId == s.id {
 			continue
 		}
-		go s.mustSendToFollower(ctx, peerId, peerResults)
+		go s.mustSendToFollower(peerId, peerResults)
 	}
 
 	// Wait for majority
@@ -234,13 +231,13 @@ func (s *RaftSurfstore) sendPersistentHeartbeats(ctx context.Context) bool {
 	// Update commit index
 	s.commitIndex = max(s.commitIndex, toCommitIndex)
 	// Apply to state machine
-	s.executeStateMachine(ctx, true)
+	s.executeStateMachine(true)
 	s.raftStateMutex.Unlock()
 
 	return true
 }
 
-func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, peerResult chan<- bool) {
+func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResult chan<- bool) {
 	client := NewRaftSurfstoreClient(s.rpcConns[peerId])
 
 	// Get the latest append entry input
@@ -250,13 +247,13 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 	s.raftStateMutex.RUnlock()
 
 	// Make PRC
-	output, err := client.AppendEntries(ctx, appendEntryInput)
+	output, err := client.AppendEntries(s.getNewContext(), appendEntryInput)
 
 	for {
 		if err != nil {
 			// If error, retry
 			time.Sleep(100 * time.Millisecond)
-			output, err = client.AppendEntries(ctx, appendEntryInput)
+			output, err = client.AppendEntries(s.getNewContext(), appendEntryInput)
 		} else if output.Success {
 			// If successful, update next index and match index
 			s.raftStateMutex.Lock()
@@ -264,7 +261,7 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 			s.matchIndex[peerId] = output.MatchedIndex
 			s.raftStateMutex.Unlock()
 			peerResult <- true
-			break
+			return
 		} else if output.Term > myTerm {
 			// If I am a stale leader, revert to follower
 			s.serverStatusMutex.Lock()
@@ -274,27 +271,27 @@ func (s *RaftSurfstore) mustSendToFollower(ctx context.Context, peerId int64, pe
 			s.term = output.Term
 			s.raftStateMutex.Unlock()
 			peerResult <- false
-			break
+			return
 		} else {
 			// If log inconsistency, decrement next index and retry
 			s.raftStateMutex.Lock()
 			s.nextIndex[peerId] = max(s.nextIndex[peerId]-1, 0)
 			appendEntryInput = s.makeAppendEntryInput(peerId)
 			s.raftStateMutex.Unlock()
-			output, err = client.AppendEntries(ctx, appendEntryInput)
+			output, err = client.AppendEntries(s.getNewContext(), appendEntryInput)
 		}
 	}
 }
 
 // Locked
-func (s *RaftSurfstore) executeStateMachine(ctx context.Context, isLeader bool) {
+func (s *RaftSurfstore) executeStateMachine(isLeader bool) {
 	// Sync state machine to commit index
 	for s.lastApplied < s.commitIndex {
 		nextToApply := s.lastApplied + 1
 		nextEntry := s.log[nextToApply]
 		if nextEntry.FileMetaData != nil {
 			// If is not no-op, apply to state machine
-			version, err := s.metaStore.UpdateFile(ctx, nextEntry.FileMetaData)
+			version, err := s.metaStore.UpdateFile(s.getNewContext(), nextEntry.FileMetaData)
 			if isLeader {
 				// If is leader, cache response
 				s.pendingResponses[nextToApply] = &Response{
@@ -323,4 +320,8 @@ func (s *RaftSurfstore) makeAppendEntryInput(peerId int64) *AppendEntryInput {
 		LeaderCommit: s.commitIndex,
 	}
 	return appendEntryInput
+}
+
+func (s *RaftSurfstore) getNewContext() context.Context {
+	return context.Background()
 }

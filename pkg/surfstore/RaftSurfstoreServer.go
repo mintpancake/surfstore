@@ -49,13 +49,13 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 	}
 
 	// Wait for majority
-	success := s.sendPersistentHeartbeats(ctx)
+	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
 	}
 
-	return s.metaStore.GetFileInfoMap(ctx, empty)
+	return s.metaStore.GetFileInfoMap(s.getNewContext(), empty)
 }
 
 func (s *RaftSurfstore) GetBlockStoreMap(ctx context.Context, hashes *BlockHashes) (*BlockStoreMap, error) {
@@ -67,13 +67,13 @@ func (s *RaftSurfstore) GetBlockStoreMap(ctx context.Context, hashes *BlockHashe
 	}
 
 	// Wait for majority
-	success := s.sendPersistentHeartbeats(ctx)
+	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
 	}
 
-	return s.metaStore.GetBlockStoreMap(ctx, hashes)
+	return s.metaStore.GetBlockStoreMap(s.getNewContext(), hashes)
 
 }
 
@@ -86,13 +86,13 @@ func (s *RaftSurfstore) GetBlockStoreAddrs(ctx context.Context, empty *emptypb.E
 	}
 
 	// Wait for majority
-	success := s.sendPersistentHeartbeats(ctx)
+	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
 	}
 
-	return s.metaStore.GetBlockStoreAddrs(ctx, empty)
+	return s.metaStore.GetBlockStoreAddrs(s.getNewContext(), empty)
 
 }
 
@@ -116,7 +116,7 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	s.raftStateMutex.Unlock()
 
 	// Wait for majority
-	success := s.sendPersistentHeartbeats(ctx)
+	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
 		return nil, ErrNotLeader
@@ -188,7 +188,7 @@ func (s *RaftSurfstore) AppendEntries(ctx context.Context, input *AppendEntryInp
 	}
 
 	// Apply to state machine
-	s.executeStateMachine(ctx, false)
+	s.executeStateMachine(false)
 
 	s.raftStateMutex.Unlock()
 
@@ -211,7 +211,16 @@ func (s *RaftSurfstore) SetLeader(ctx context.Context, _ *emptypb.Empty) (*Succe
 	s.raftStateMutex.Lock()
 	s.term++
 	s.initLeaderStates()
+	// Append no-op entry
+	s.log = append(s.log, &UpdateOperation{Term: s.term, FileMetaData: nil})
 	s.raftStateMutex.Unlock()
+
+	// Wait for majority
+	success := s.sendPersistentHeartbeats()
+	if !success {
+		// Reverted to follower
+		return &Success{Flag: false}, ErrNotLeader
+	}
 
 	return &Success{Flag: true}, nil
 }
@@ -223,7 +232,7 @@ func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*S
 	}
 
 	// Wait for majority
-	success := s.sendPersistentHeartbeats(ctx)
+	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
 		return &Success{Flag: false}, ErrNotLeader

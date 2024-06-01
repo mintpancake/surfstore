@@ -150,8 +150,10 @@ func SameOperation(op1, op2 *surfstore.UpdateOperation) bool {
 	if op1.Term != op2.Term {
 		return false
 	}
-	if op1.FileMetaData == nil && op2.FileMetaData != nil ||
-		op1.FileMetaData != nil && op2.FileMetaData == nil {
+	if op1.FileMetaData == nil && op2.FileMetaData == nil {
+		return true
+	}
+	if op1.FileMetaData == nil || op2.FileMetaData == nil {
 		return false
 	}
 	if op1.FileMetaData.Version != op2.FileMetaData.Version {
