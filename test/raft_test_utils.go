@@ -96,7 +96,7 @@ func InitRaftServers(cfgPath string, cfg surfstore.RaftConfig) []*exec.Cmd {
 	cmdList := make([]*exec.Cmd, 0)
 	for idx := range cfg.RaftAddrs {
 
-		cmd := exec.Command("_bin/SurfstoreRaftServerExec", "-d", "-f", cfgPath, "-i", strconv.Itoa(idx))
+		cmd := exec.Command("_bin/SurfstoreRaftServerExec", "-f", cfgPath, "-i", strconv.Itoa(idx))
 		cmd.Stderr = os.Stderr
 		cmd.Stdout = os.Stdout
 		cmdList = append(cmdList, cmd)
@@ -150,11 +150,12 @@ func SameOperation(op1, op2 *surfstore.UpdateOperation) bool {
 	if op1.Term != op2.Term {
 		return false
 	}
+	if op1.FileMetaData == nil && op2.FileMetaData != nil ||
+		op1.FileMetaData != nil && op2.FileMetaData == nil {
+		return false
+	}
 	if op1.FileMetaData == nil && op2.FileMetaData == nil {
 		return true
-	}
-	if op1.FileMetaData == nil || op2.FileMetaData == nil {
-		return false
 	}
 	if op1.FileMetaData.Version != op2.FileMetaData.Version {
 		return false

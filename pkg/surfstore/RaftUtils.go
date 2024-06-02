@@ -212,9 +212,9 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 	numResults := 1
 	numAliveServers := 1
 	for numResults < s.n {
-		peerOk := <-peerResults
+		result := <-peerResults
 		numResults++
-		if peerOk {
+		if result {
 			numAliveServers++
 		}
 		if numAliveServers >= s.m {
@@ -237,7 +237,7 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 	return true
 }
 
-func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResult chan<- bool) {
+func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResults chan<- bool) {
 	client := NewRaftSurfstoreClient(s.rpcConns[peerId])
 
 	// Get the latest append entry input
@@ -260,7 +260,7 @@ func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResult chan<- bool)
 			s.nextIndex[peerId] = output.MatchedIndex + 1
 			s.matchIndex[peerId] = output.MatchedIndex
 			s.raftStateMutex.Unlock()
-			peerResult <- true
+			peerResults <- true
 			return
 		} else if output.Term > myTerm {
 			// If I am a stale leader, revert to follower
@@ -270,7 +270,7 @@ func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResult chan<- bool)
 			s.raftStateMutex.Lock()
 			s.term = output.Term
 			s.raftStateMutex.Unlock()
-			peerResult <- false
+			peerResults <- false
 			return
 		} else {
 			// If log inconsistency, decrement next index and retry
