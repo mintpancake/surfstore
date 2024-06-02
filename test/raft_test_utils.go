@@ -96,7 +96,7 @@ func InitRaftServers(cfgPath string, cfg surfstore.RaftConfig) []*exec.Cmd {
 	cmdList := make([]*exec.Cmd, 0)
 	for idx := range cfg.RaftAddrs {
 
-		cmd := exec.Command("_bin/SurfstoreRaftServerExec", "-f", cfgPath, "-i", strconv.Itoa(idx))
+		cmd := exec.Command("_bin/SurfstoreRaftServerExec", "-d", "-f", cfgPath, "-i", strconv.Itoa(idx))
 		cmd.Stderr = os.Stderr
 		cmd.Stdout = os.Stdout
 		cmdList = append(cmdList, cmd)
