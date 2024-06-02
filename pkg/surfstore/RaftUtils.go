@@ -73,7 +73,7 @@ func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
 		lastApplied:      -1,
 		nextIndex:        make([]int64, len(config.RaftAddrs)),
 		matchIndex:       make([]int64, len(config.RaftAddrs)),
-		pendingResponses: make(map[int64]*Response),
+		pendingResponses: make(map[int64]*UpdateFileResponse),
 
 		peers: config.RaftAddrs,
 
@@ -186,7 +186,7 @@ func (s *RaftSurfstore) initLeaderStates() {
 	}
 
 	// Init pending responses
-	s.pendingResponses = make(map[int64]*Response)
+	s.pendingResponses = make(map[int64]*UpdateFileResponse)
 }
 
 func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
@@ -199,31 +199,71 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 	}
 	s.raftStateMutex.RUnlock()
 
-	peerResults := make(chan bool, s.n-1)
+	// Each follower can report at most twice, one for unreachable and one for success
+	peerMessageChannel := make(chan *PeerMessage, 2*(s.n-1))
 	for peerId := range s.peers {
 		peerId := int64(peerId)
 		if peerId == s.id {
 			continue
 		}
-		go s.mustSendToFollower(peerId, peerResults)
+		go s.mustSendToFollower(peerId, peerMessageChannel)
+	}
+
+	// DIFF FROM RAFT START: Wait for all reachable servers
+
+	peerStatusTable := make([]*PeerStatus, s.n)
+	for i := range peerStatusTable {
+		if int64(i) == s.id {
+			peerStatusTable[i] = &PeerStatus{
+				isReachable: true,
+				isUpdated:   true,
+			}
+		} else {
+			peerStatusTable[i] = &PeerStatus{
+				isReachable: true,
+				isUpdated:   false,
+			}
+		}
 	}
 
 	// Wait for majority
-	numResults := 1
-	numAliveServers := 1
-	for numResults < s.n {
-		result := <-peerResults
-		numResults++
-		if result {
-			numAliveServers++
+	isOutdated := false
+	for {
+		// Get peer message
+		peerMessage := <-peerMessageChannel
+		peerId := peerMessage.peerId
+		peerInfo := peerMessage.peerInfo
+		if peerInfo == PeerInfoUnreachable {
+			peerStatusTable[peerId].isReachable = false
+		} else if peerInfo == PeerInfoSuccess {
+			peerStatusTable[peerId].isUpdated = true
+		} else if peerInfo == PeerInfoFail {
+			// If any fail, must be reverted to follower
+			isOutdated = true
+			break
 		}
-		if numAliveServers >= s.m {
+
+		// Check all reachable success and majority success
+		allReachableUpdated := true
+		numUpdated := 0
+		for i := range peerStatusTable {
+			if peerStatusTable[i].isReachable && !peerStatusTable[i].isUpdated {
+				// If reachable but not updated, continue waiting
+				allReachableUpdated = false
+			}
+			if peerStatusTable[i].isUpdated {
+				numUpdated++
+			}
+		}
+		if allReachableUpdated && numUpdated >= s.m {
 			break
 		}
 	}
 
-	if numAliveServers < s.m {
-		// If not majority, reverted to follower
+	// DIFF FROM RAFT END
+
+	if isOutdated {
+		// If outdated, reverted to follower
 		return false
 	}
 
@@ -237,7 +277,7 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 	return true
 }
 
-func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResults chan<- bool) {
+func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerMessageChannel chan<- *PeerMessage) {
 	client := NewRaftSurfstoreClient(s.rpcConns[peerId])
 
 	// Get the latest append entry input
@@ -249,9 +289,16 @@ func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResults chan<- bool
 	// Make PRC
 	output, err := client.AppendEntries(s.getNewContext(), appendEntryInput)
 
+	hasReportedUnreachable := false
+
 	for {
 		if err != nil {
 			// If error, retry
+			if !hasReportedUnreachable {
+				// If first time, report unreachable
+				peerMessageChannel <- &PeerMessage{peerId: peerId, peerInfo: PeerInfoUnreachable}
+				hasReportedUnreachable = true
+			}
 			time.Sleep(100 * time.Millisecond)
 			output, err = client.AppendEntries(s.getNewContext(), appendEntryInput)
 		} else if output.Success {
@@ -260,7 +307,8 @@ func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResults chan<- bool
 			s.nextIndex[peerId] = output.MatchedIndex + 1
 			s.matchIndex[peerId] = output.MatchedIndex
 			s.raftStateMutex.Unlock()
-			peerResults <- true
+			// Report success
+			peerMessageChannel <- &PeerMessage{peerId: peerId, peerInfo: PeerInfoSuccess}
 			return
 		} else if output.Term > myTerm {
 			// If I am a stale leader, revert to follower
@@ -270,7 +318,8 @@ func (s *RaftSurfstore) mustSendToFollower(peerId int64, peerResults chan<- bool
 			s.raftStateMutex.Lock()
 			s.term = output.Term
 			s.raftStateMutex.Unlock()
-			peerResults <- false
+			// Report fail
+			peerMessageChannel <- &PeerMessage{peerId: peerId, peerInfo: PeerInfoFail}
 			return
 		} else {
 			// If log inconsistency, decrement next index and retry
@@ -294,7 +343,7 @@ func (s *RaftSurfstore) executeStateMachine(isLeader bool) {
 			version, err := s.metaStore.UpdateFile(s.getNewContext(), nextEntry.FileMetaData)
 			if isLeader {
 				// If is leader, cache response
-				s.pendingResponses[nextToApply] = &Response{
+				s.pendingResponses[nextToApply] = &UpdateFileResponse{
 					version: version,
 					Err:     err,
 				}

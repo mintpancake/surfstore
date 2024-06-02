@@ -31,7 +31,7 @@ type RaftSurfstore struct {
 	lastApplied      int64
 	nextIndex        []int64
 	matchIndex       []int64
-	pendingResponses map[int64]*Response
+	pendingResponses map[int64]*UpdateFileResponse
 
 	peers []string
 
