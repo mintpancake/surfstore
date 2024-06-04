@@ -245,10 +245,15 @@ func (s *RaftSurfstore) SendHeartbeat(ctx context.Context, _ *emptypb.Empty) (*S
 
 func (s *RaftSurfstore) MakeServerUnreachableFrom(ctx context.Context, servers *UnreachableFromServers) (*Success, error) {
 	s.raftStateMutex.Lock()
-	for _, serverId := range servers.ServerIds {
-		s.unreachableFrom[serverId] = true
+	if len(servers.ServerIds) == 0 {
+		s.unreachableFrom = make(map[int64]bool)
+		log.Printf("Server %d is reachable from all servers", s.id)
+	} else {
+		for _, serverId := range servers.ServerIds {
+			s.unreachableFrom[serverId] = true
+		}
+		log.Printf("Server %d is unreachable from %v", s.id, s.unreachableFrom)
 	}
-	log.Printf("Server %v is unreachable from", s.unreachableFrom)
 	s.raftStateMutex.Unlock()
 
 	return &Success{Flag: true}, nil
