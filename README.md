@@ -1,4 +1,4 @@
-# Instructions to start project 5
+# SurfStore
 1. Install the protocol compiler plugins for Go
 ```
 go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.28
