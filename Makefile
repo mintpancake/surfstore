@@ -8,7 +8,7 @@ install:
 
 .PHONY: run-blockstore
 run-blockstore:
-	go run cmd/SurfstoreServerExec/main.go -s block -p 8081 -l
+	go run cmd/SurfstoreServerExec/main.go -s block -p $(PORT)
 
 .PHONY: run-raft
 run-raft:
