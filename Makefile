@@ -12,7 +12,7 @@ run-blockstore:
 
 .PHONY: run-raft
 run-raft:
-	go run cmd/SurfstoreRaftServerExec/main.go -f example_config.txt -i $(IDX)
+	go run cmd/SurfstoreRaftServerExec/main.go -f config.json -i $(IDX)
 
 .PHONY: test
 test:

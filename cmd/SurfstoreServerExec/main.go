@@ -87,5 +87,6 @@ func startServer(hostAddr string, serviceType string, blockStoreAddrs []string) 
 	if e != nil {
 		return e
 	}
+	fmt.Printf("Server started at %s\n", hostAddr)
 	return grpcServer.Serve(l)
 }

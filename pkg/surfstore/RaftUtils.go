@@ -4,6 +4,7 @@ import (
 	"bufio"
 	context "context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -13,6 +14,7 @@ import (
 
 	grpc "google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 type RaftConfig struct {
@@ -89,7 +91,18 @@ func ServeRaftServer(server *RaftSurfstore) error {
 	if e != nil {
 		return e
 	}
-	return server.grpcServer.Serve(l)
+	// If last server, set leader
+	if server.id == int64(server.n-1) {
+		go server.setInitialLeader()
+	}
+	fmt.Printf("Server %d started at %s\n", server.id, server.peers[server.id])
+	err := server.grpcServer.Serve(l)
+	return err
+}
+
+func (s *RaftSurfstore) setInitialLeader() {
+	s.SetLeader(context.Background(), &emptypb.Empty{})
+	s.SendHeartbeat(context.Background(), &emptypb.Empty{})
 }
 
 func (s *RaftSurfstore) checkStatus(isFromLeader bool, leaderId int64) (ServerStatus, error) {

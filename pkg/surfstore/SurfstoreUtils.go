@@ -23,6 +23,7 @@ func ClientSync(client RPCClient) {
 	logic.RPCClient = client
 	err := logic.ExcecuteLogic()
 	if err != nil {
+		fmt.Println("Error executing logic:", err)
 		log.Fatal(err)
 	}
 }

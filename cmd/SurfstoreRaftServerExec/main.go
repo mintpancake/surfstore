@@ -29,6 +29,5 @@ func startServer(id int64, config surfstore.RaftConfig) error {
 	if err != nil {
 		log.Fatal("Error creating servers")
 	}
-
 	return surfstore.ServeRaftServer(raftServer)
 }
