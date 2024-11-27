@@ -101,6 +101,7 @@ func ServeRaftServer(server *RaftSurfstore) error {
 }
 
 func (s *RaftSurfstore) setInitialLeader() {
+	time.Sleep(200 * time.Millisecond)
 	s.SetLeader(context.Background(), &emptypb.Empty{})
 	s.SendHeartbeat(context.Background(), &emptypb.Empty{})
 }
