@@ -209,7 +209,7 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 	s.raftStateMutex.RLock()
 	toCommitIndex := s.commitIndex
 	if s.log[len(s.log)-1].Term == s.term {
-		// If the latest log entry is from this term, try committing it
+		// If the latest log entry is from the current term, try committing it
 		toCommitIndex = int64(len(s.log) - 1)
 	}
 	s.raftStateMutex.RUnlock()
@@ -223,8 +223,6 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 		}
 		go s.mustSendToFollower(peerId, peerMessageChannel)
 	}
-
-	// DIFF FROM RAFT START: Wait for all reachable servers
 
 	peerStatusTable := make([]*PeerStatus, s.n)
 	for i := range peerStatusTable {
@@ -259,23 +257,24 @@ func (s *RaftSurfstore) sendPersistentHeartbeats() bool {
 		}
 
 		// Check all reachable success and majority success
-		allReachableUpdated := true
+		// allReachableUpdated := true
 		numUpdated := 0
 		for i := range peerStatusTable {
-			if peerStatusTable[i].isReachable && !peerStatusTable[i].isUpdated {
-				// If reachable but not updated, continue waiting
-				allReachableUpdated = false
-			}
+			// if peerStatusTable[i].isReachable && !peerStatusTable[i].isUpdated {
+			// 	// If reachable but not updated, continue waiting
+			// 	allReachableUpdated = false
+			// }
 			if peerStatusTable[i].isUpdated {
 				numUpdated++
 			}
 		}
-		if allReachableUpdated && numUpdated >= s.m {
+		// if allReachableUpdated && numUpdated >= s.m {
+		// 	break
+		// }
+		if numUpdated >= s.m {
 			break
 		}
 	}
-
-	// DIFF FROM RAFT END
 
 	if isOutdated {
 		// If outdated, reverted to follower

@@ -48,7 +48,7 @@ func (s *RaftSurfstore) GetFileInfoMap(ctx context.Context, empty *emptypb.Empty
 		return nil, err
 	}
 
-	// Wait for majority
+	// Wait for majority, ensure the meta store is up-to-date
 	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
@@ -66,7 +66,7 @@ func (s *RaftSurfstore) GetBlockStoreMap(ctx context.Context, hashes *BlockHashe
 		return nil, err
 	}
 
-	// Wait for majority
+	// Wait for majority, ensure the meta store is up-to-date
 	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
@@ -85,7 +85,7 @@ func (s *RaftSurfstore) GetBlockStoreAddrs(ctx context.Context, empty *emptypb.E
 		return nil, err
 	}
 
-	// Wait for majority
+	// Wait for majority, ensure the meta store is up-to-date
 	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
@@ -115,7 +115,7 @@ func (s *RaftSurfstore) UpdateFile(ctx context.Context, filemeta *FileMetaData) 
 	requestLogIndex := int64(len(s.log) - 1)
 	s.raftStateMutex.Unlock()
 
-	// Wait for majority
+	// Wait for majority, commit logs and apply to state machine
 	success := s.sendPersistentHeartbeats()
 	if !success {
 		// Reverted to follower
