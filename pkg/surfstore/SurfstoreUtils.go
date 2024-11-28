@@ -100,26 +100,32 @@ func invertBlockStoreMap(blockStoreMap map[string][]string) map[string]string {
 }
 
 func (logic *Logic) ExcecuteLogic() error {
+	// Load index.db
 	err := logic.LoadLocal()
 	if err != nil {
 		return err
 	}
+	// Load remote metadata
 	err = logic.LoadRomote()
 	if err != nil {
 		return err
 	}
+	// Download remote files
 	err = logic.SyncRemoteToLocal()
 	if err != nil {
 		return err
 	}
+	// Load base directory
 	err = logic.LoadBase()
 	if err != nil {
 		return err
 	}
+	// Upload updated files
 	err = logic.SyncBaseToLocal()
 	if err != nil {
 		return err
 	}
+	// Save index.db
 	err = logic.SaveLocal()
 	if err != nil {
 		return err
@@ -160,6 +166,7 @@ func (logic *Logic) SyncRemoteToLocal() error {
 func (logic *Logic) DownloadFile(filename string) error {
 	remoteBlockHashList := logic.RemoteFileMetaMap[filename].BlockHashList
 	if isDeleted(remoteBlockHashList) {
+		// Delete file
 		if _, err := os.Stat(ConcatPath(logic.RPCClient.BaseDir, filename)); err == nil {
 			err := os.Remove(ConcatPath(logic.RPCClient.BaseDir, filename))
 			if err != nil {
@@ -167,6 +174,7 @@ func (logic *Logic) DownloadFile(filename string) error {
 			}
 		}
 	} else if isEmpty(remoteBlockHashList) {
+		// Create empty file
 		if _, err := os.Stat(ConcatPath(logic.RPCClient.BaseDir, filename)); err == nil {
 			err := os.Remove(ConcatPath(logic.RPCClient.BaseDir, filename))
 			if err != nil {
@@ -178,12 +186,15 @@ func (logic *Logic) DownloadFile(filename string) error {
 			return err
 		}
 	} else {
+		// Download file
 		blockStoreMap := make(map[string][]string)
+		// Get responsible server for each block
 		logic.RPCClient.GetBlockStoreMap(remoteBlockHashList, &blockStoreMap)
 		hashAddrMap := invertBlockStoreMap(blockStoreMap)
 
 		fileData := []byte{}
 		for _, blockHash := range remoteBlockHashList {
+			// Get each block from its responsible server
 			var block Block
 			err := logic.RPCClient.GetBlock(blockHash, hashAddrMap[blockHash], &block)
 			if err != nil {
@@ -216,6 +227,7 @@ func (logic *Logic) ScanBaseDir() error {
 		return err
 	}
 	for _, file := range files {
+		// Calculate the hash list for each file
 		if !file.IsDir() && file.Name() != INDEX_NAME {
 			fileData, err := os.ReadFile(ConcatPath(logic.RPCClient.BaseDir, file.Name()))
 			if err != nil {
@@ -235,6 +247,7 @@ func (logic *Logic) ScanBaseDir() error {
 func (logic *Logic) CompleteBaseWithLocal() {
 	for filename, localFileInfo := range logic.LocalFileMetaMap {
 		baseFileInfo, baseExist := logic.BaseFileMetaMap[filename]
+		// Check if the file is updated or deleted
 		if isDeleted(localFileInfo.BlockHashList) {
 			if !baseExist {
 				logic.BaseFileMetaMap[filename] = copyFileInfo(localFileInfo)
@@ -263,6 +276,7 @@ func (logic *Logic) SyncBaseToLocal() error {
 	for filename, baseFileInfo := range logic.BaseFileMetaMap {
 		localFileInfo, localExist := logic.LocalFileMetaMap[filename]
 		if !localExist || baseFileInfo.Version > localFileInfo.Version {
+			// Upload an updated file
 			err := logic.UploadFile(filename)
 			if err != nil {
 				return err
@@ -276,9 +290,11 @@ func (logic *Logic) UploadFile(filename string) error {
 	baseFileInfo := logic.BaseFileMetaMap[filename]
 	baseBlockHashList := baseFileInfo.BlockHashList
 	if isDeleted(baseBlockHashList) || isEmpty(baseBlockHashList) {
+		// Update remote metadata
 		var latestVersion int32
 		logic.RPCClient.UpdateFile(copyFileInfo(baseFileInfo), &latestVersion)
 		if latestVersion == -1 {
+			// Overwrite local file if there is an immediate conflict
 			err := logic.ResolveConflict(filename)
 			if err != nil {
 				return err
@@ -291,6 +307,7 @@ func (logic *Logic) UploadFile(filename string) error {
 		logic.RPCClient.GetBlockStoreMap(baseBlockHashList, &blockStoreMap)
 		hashAddrMap := invertBlockStoreMap(blockStoreMap)
 
+		// Get missing blocks
 		missingBlockHashSet := make(map[string]struct{})
 		for addr, blockHashList := range blockStoreMap {
 			missingBlockHashList := []string{}
@@ -309,6 +326,7 @@ func (logic *Logic) UploadFile(filename string) error {
 		}
 		for i := range baseBlockHashList {
 			blockHash := baseBlockHashList[i]
+			// Only upload missing blocks
 			if _, missing := missingBlockHashSet[blockHash]; missing {
 				end := (i + 1) * logic.RPCClient.BlockSize
 				if end > len(fileData) {
@@ -328,9 +346,12 @@ func (logic *Logic) UploadFile(filename string) error {
 				}
 			}
 		}
+
+		// Update remote metadata
 		var latestVersion int32
 		logic.RPCClient.UpdateFile(copyFileInfo(baseFileInfo), &latestVersion)
 		if latestVersion == -1 {
+			// Overwrite local file if there is an immediate conflict
 			err := logic.ResolveConflict(filename)
 			if err != nil {
 				return err

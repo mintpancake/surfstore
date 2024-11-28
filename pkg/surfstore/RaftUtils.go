@@ -53,6 +53,7 @@ func NewRaftServer(id int64, config RaftConfig) (*RaftSurfstore, error) {
 	serverStatusMutex := sync.RWMutex{}
 	raftStateMutex := sync.RWMutex{}
 
+	// Initialize server
 	server := RaftSurfstore{
 		serverStatus:      ServerStatus_FOLLOWER,
 		serverStatusMutex: &serverStatusMutex,
@@ -91,7 +92,7 @@ func ServeRaftServer(server *RaftSurfstore) error {
 	if e != nil {
 		return e
 	}
-	// If last server, set leader
+	// Default the last server to leader
 	if server.id == int64(server.n-1) {
 		go server.setInitialLeader()
 	}

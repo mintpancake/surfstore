@@ -30,6 +30,7 @@ func (c *ConsistentHashRing) GetResponsibleServer(blockId string) string {
 	if addr, ok := c.Cache[blockId]; ok {
 		return addr
 	}
+	// Find the first server whose hash is greater than the block hash using binary search
 	var addr string
 	if blockId > c.ServerHashes[len(c.ServerHashes)-1] {
 		addr = c.ServerMap[c.ServerHashes[0]]

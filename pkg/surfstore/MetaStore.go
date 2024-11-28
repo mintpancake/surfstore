@@ -35,6 +35,7 @@ func (m *MetaStore) UpdateFile(ctx context.Context, fileMetaData *FileMetaData) 
 func (m *MetaStore) GetBlockStoreMap(ctx context.Context, blockHashesIn *BlockHashes) (*BlockStoreMap, error) {
 	blockStoreMap := &BlockStoreMap{BlockStoreMap: map[string]*BlockHashes{}}
 	for _, hash := range blockHashesIn.Hashes {
+		// Get the responsible server from the consistent hash ring
 		addr := m.ConsistentHashRing.GetResponsibleServer(hash)
 		if _, ok := blockStoreMap.BlockStoreMap[addr]; !ok {
 			blockStoreMap.BlockStoreMap[addr] = &BlockHashes{Hashes: []string{}}
